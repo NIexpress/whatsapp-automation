@@ -1,0 +1,44 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Testing
+/coverage
+
+# Next.js build output
+/.next/
+/out/
+
+# Database files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Production builds
+/build
+/dist
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local environment & secret files (CRITICAL: Never commit to Git)
+.env
+.env*.local
+.env.development
+.env.production
+.env.test
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Operating System files
+.DS_Store
+*.pem
+Thumbs.db

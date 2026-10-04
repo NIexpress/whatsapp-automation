@@ -1,0 +1,521 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// =========================================================================
+// NEEDIN CORE — REUSABLE MULTI-SERVICE PLATFORM INFRASTRUCTURE
+// =========================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  password_hash String
+  role          String    @default("STAFF") // OWNER, ADMIN, MANAGER, STAFF
+  status        String    @default("ACTIVE") // ACTIVE, INACTIVE, SUSPENDED
+  phone         String?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  assigned_conversations Conversation[]        @relation("AssignedStaff")
+  verified_vaccines      VaccinationRecord[]   @relation("VerifiedStaff")
+  checkins_handled       DogDaycareCheckIn[]   @relation("CheckInStaff")
+  pickups_handled        DogDaycareCheckIn[]   @relation("PickUpStaff")
+  template_versions      TemplateVersion[]     @relation("TemplateCreatedBy")
+  audit_logs             AuditLog[]            @relation("UserAuditLogs")
+
+  @@index([role])
+  @@index([status])
+  @@map("users")
+}
+
+model Customer {
+  id         String   @id @default(cuid())
+  phone      String   @unique
+  name       String
+  email      String?
+  notes      String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  dogs              Dog[]
+  bookings          DogDaycareBooking[]
+  vehicles          Vehicle[]
+  car_wash_bookings CarWashBooking[]
+  conversations     Conversation[]
+  payments          Payment[]
+  feedbacks         CustomerFeedback[]
+
+  @@index([phone])
+  @@index([email])
+  @@map("customers")
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. "DOG_DAY_CARE", "PET_GROOMING", "VET_CLINIC"
+  name        String
+  description String?
+  is_active   Boolean  @default(true)
+  icon        String?  @default("paw-print")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  configs       ServiceConfig[]
+  templates     MessageTemplate[]
+  automations   AutomationRule[]
+  conversations Conversation[]
+  feedbacks     CustomerFeedback[]
+
+  @@index([code])
+  @@index([is_active])
+  @@map("services")
+}
+
+model ServiceConfig {
+  id         String   @id @default(cuid())
+  service_id String
+  key        String   // e.g. "BUSINESS_HOURS", "DEFAULT_CAPACITY", "CANCELLATION_POLICY"
+  value_json String   // JSON serialized settings
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  service Service @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@unique([service_id, key])
+  @@index([service_id])
+  @@map("service_configs")
+}
+
+model Conversation {
+  id                String   @id @default(cuid())
+  customer_id       String
+  phone             String
+  active_service_id String?
+  status            String   @default("AI_ACTIVE") // AI_ACTIVE, HUMAN_ACTIVE, WAITING_FOR_CUSTOMER, CLOSED
+  current_intent    String   @default("GREETING")
+  ai_enabled        Boolean  @default(true)
+  assigned_user_id  String?
+  session_state     String?  // JSON string holding multi-turn conversation memory
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  customer       Customer  @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  active_service Service?  @relation(fields: [active_service_id], references: [id])
+  assigned_user  User?     @relation("AssignedStaff", fields: [assigned_user_id], references: [id])
+  messages       Message[]
+
+  @@unique([customer_id, phone])
+  @@index([phone])
+  @@index([status])
+  @@map("conversations")
+}
+
+model Message {
+  id                  String   @id @default(cuid())
+  conversation_id     String
+  sender_type         String   // CUSTOMER, AI, STAFF, SYSTEM
+  message_type        String   @default("TEXT") // TEXT, INTERACTIVE, TEMPLATE, IMAGE, DOCUMENT
+  content             String
+  whatsapp_message_id String?
+  metadata            String?  // JSON string
+  created_at          DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+
+  @@index([conversation_id])
+  @@index([whatsapp_message_id])
+  @@map("messages")
+}
+
+model MessageTemplate {
+  id          String   @id @default(cuid())
+  service_id  String?  // Null for platform-wide/core templates, set for service-specific
+  code        String   @unique // e.g. "WELCOME", "BOOKING_CONFIRMATION", "PAYMENT_LINK"
+  name        String
+  category    String   @default("MARKETING") // MARKETING, UTILITY, AUTHENTICATION
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  service  Service?          @relation(fields: [service_id], references: [id], onDelete: Cascade)
+  versions TemplateVersion[]
+
+  @@index([code])
+  @@index([service_id])
+  @@map("message_templates")
+}
+
+model TemplateVersion {
+  id                         String   @id @default(cuid())
+  template_id                String
+  version_number             Int      @default(1)
+  body                       String   // Contains {{placeholders}}
+  whatsapp_meta_template_name String?
+  meta_template_id           String?
+  language                   String   @default("en")
+  variables                  String?  // JSON array of supported variable names e.g. ["customer_name", "dog_name"]
+  is_active                  Boolean  @default(true)
+  created_by_user_id         String?
+  created_at                 DateTime @default(now())
+
+  template   MessageTemplate @relation(fields: [template_id], references: [id], onDelete: Cascade)
+  created_by User?           @relation("TemplateCreatedBy", fields: [created_by_user_id], references: [id])
+
+  @@unique([template_id, version_number])
+  @@index([template_id])
+  @@index([is_active])
+  @@map("template_versions")
+}
+
+model Payment {
+  id                 String    @id @default(cuid())
+  customer_id        String
+  service_id         String?
+  reference_type     String    @default("BOOKING") // BOOKING, PACKAGE, ADD_ON
+  reference_id       String    // ID of the booking or package purchase
+  gateway            String    @default("RAZORPAY")
+  gateway_order_id   String?   @unique
+  gateway_payment_id String?   @unique
+  gateway_signature  String?
+  amount             Float
+  currency           String    @default("INR")
+  status             String    @default("PENDING") // PENDING, SUCCESS, FAILED, REFUNDED
+  paid_at            DateTime?
+  metadata           String?   // JSON string
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  customer          Customer            @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  bookings          DogDaycareBooking[]
+  car_wash_bookings CarWashBooking[]
+
+  @@index([customer_id])
+  @@index([gateway_order_id])
+  @@index([status])
+  @@map("payments")
+}
+
+model AutomationRule {
+  id            String   @id @default(cuid())
+  service_id    String?  // Null for global rules, set for service-specific
+  name          String
+  trigger_type  String   // BOOKING_CONFIRMED, PAYMENT_PENDING, BOOKING_REMINDER, VACCINATION_EXPIRING, SERVICE_COMPLETED
+  delay_minutes Int      @default(0) // 0 for immediate, positive for delayed
+  template_code String   // Code referencing MessageTemplate
+  conditions    String?  // JSON string
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  service Service? @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@index([service_id])
+  @@index([trigger_type])
+  @@index([is_active])
+  @@map("automation_rules")
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  actor_user_id  String?
+  actor_name     String   @default("SYSTEM")
+  action         String   // e.g. "MANUAL_BOOKING_CONFIRM", "STATUS_CHANGE", "TEMPLATE_UPDATE"
+  entity_type    String   // e.g. "BOOKING", "TEMPLATE", "CUSTOMER", "DOG", "PAYMENT"
+  entity_id      String?
+  old_value      String?  // JSON string
+  new_value      String?  // JSON string
+  reason         String?
+  ip_address     String?
+  created_at     DateTime @default(now())
+
+  actor_user User? @relation("UserAuditLogs", fields: [actor_user_id], references: [id])
+
+  @@index([actor_user_id])
+  @@index([action])
+  @@index([entity_type, entity_id])
+  @@index([created_at])
+  @@map("audit_logs")
+}
+
+// =========================================================================
+// SERVICE MODULE #1 — DOG DAY CARE / PET CARE
+// =========================================================================
+
+model Dog {
+  id                 String   @id @default(cuid())
+  customer_id        String
+  name               String
+  breed              String
+  age_years          Int      @default(1)
+  age_months         Int      @default(0)
+  weight_kg          Float?
+  gender             String   @default("UNKNOWN") // MALE, FEMALE, UNKNOWN
+  is_spayed_neutered Boolean  @default(false)
+  allergies          String?
+  medical_notes      String?
+  emergency_contact  String?
+  status             String   @default("ACTIVE") // ACTIVE, ARCHIVED
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  customer             Customer            @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  vaccination_records  VaccinationRecord[]
+  daycare_bookings     DogDaycareBooking[]
+
+  @@index([customer_id])
+  @@index([name])
+  @@map("dogs")
+}
+
+model VaccinationRecord {
+  id                  String    @id @default(cuid())
+  dog_id              String
+  vaccine_name        String    // RABIES, DHPPI, BORDETELLA, OTHER
+  administered_date   DateTime?
+  expiry_date         DateTime?
+  verified_status     String    @default("PENDING") // PENDING, APPROVED, REJECTED, EXPIRED
+  verified_by_user_id String?
+  verified_at         DateTime?
+  notes               String?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+
+  dog         Dog                   @relation(fields: [dog_id], references: [id], onDelete: Cascade)
+  verified_by User?                 @relation("VerifiedStaff", fields: [verified_by_user_id], references: [id])
+  documents   VaccinationDocument[]
+
+  @@index([dog_id])
+  @@index([vaccine_name])
+  @@index([verified_status])
+  @@map("vaccination_records")
+}
+
+model VaccinationDocument {
+  id                    String   @id @default(cuid())
+  vaccination_record_id String
+  file_url              String
+  file_type             String   @default("IMAGE") // IMAGE, PDF
+  original_filename     String?
+  file_size             Int?
+  uploaded_at           DateTime @default(now())
+
+  vaccination_record VaccinationRecord @relation(fields: [vaccination_record_id], references: [id], onDelete: Cascade)
+
+  @@index([vaccination_record_id])
+  @@map("vaccination_documents")
+}
+
+model DogDaycarePackage {
+  id             String   @id @default(cuid())
+  name           String   // e.g. "Single Day Pass", "5-Day Care Package", "Monthly Unlimited"
+  code           String   @unique // e.g. "SINGLE_DAY", "FIVE_DAY", "MONTHLY"
+  description    String?
+  price          Float
+  validity_days  Int      @default(1)
+  total_visits   Int      @default(1)
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  bookings DogDaycareBooking[]
+
+  @@index([code])
+  @@index([is_active])
+  @@map("dog_daycare_packages")
+}
+
+model DogDaycareBooking {
+  id                   String    @id @default(cuid())
+  booking_number       String    @unique // e.g. "ND-DDC-202609-1024"
+  customer_id          String
+  dog_id               String
+  package_id           String?
+  booking_date         DateTime  // Date of day care
+  dropoff_time         String    @default("09:00 AM")
+  pickup_time          String    @default("06:00 PM")
+  amount               Float
+  discount             Float     @default(0)
+  total_amount         Float
+  booking_status       String    @default("DRAFT") 
+  // DRAFT, PENDING_PAYMENT, CONFIRMED, CHECKED_IN, IN_CARE, READY_FOR_PICKUP, COMPLETED, CANCELLED, RESCHEDULED
+  payment_status       String    @default("PENDING") // PENDING, PAID, REFUNDED, OFFLINE_COLLECTED
+  payment_id           String?
+  cancellation_reason  String?
+  refund_amount        Float     @default(0)
+  special_instructions String?
+  source               String    @default("WHATSAPP") // WHATSAPP, DASHBOARD_MANUAL, PHONE_IN
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  customer Customer           @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  dog      Dog                @relation(fields: [dog_id], references: [id], onDelete: Cascade)
+  package  DogDaycarePackage? @relation(fields: [package_id], references: [id])
+  payment  Payment?           @relation(fields: [payment_id], references: [id])
+  checkin  DogDaycareCheckIn?
+
+  @@index([customer_id])
+  @@index([dog_id])
+  @@index([booking_date])
+  @@index([booking_status])
+  @@index([payment_status])
+  @@map("dog_daycare_bookings")
+}
+
+model DogDaycareAvailabilityRule {
+  id           String    @id @default(cuid())
+  date         DateTime? // Specific date override (null if recurring weekly rule)
+  day_of_week  Int?      // 0 = Sunday, 1 = Monday ... 6 = Saturday (null if specific date)
+  max_capacity Int       @default(15)
+  booked_count Int       @default(0)
+  is_blocked   Boolean   @default(false)
+  block_reason String?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  @@index([date])
+  @@index([day_of_week])
+  @@map("dog_daycare_availability_rules")
+}
+
+model DogDaycareCheckIn {
+  id                    String    @id @default(cuid())
+  booking_id            String    @unique
+  checked_in_at         DateTime  @default(now())
+  checked_in_by_user_id String?
+  in_care_at            DateTime?
+  ready_for_pickup_at   DateTime?
+  picked_up_at          DateTime?
+  picked_up_by_user_id  String?
+  staff_notes           String?
+  photo_urls            String?   // JSON array of strings
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+
+  booking            DogDaycareBooking @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  checked_in_by_user User?             @relation("CheckInStaff", fields: [checked_in_by_user_id], references: [id])
+  picked_up_by_user  User?             @relation("PickUpStaff", fields: [picked_up_by_user_id], references: [id])
+
+  @@index([booking_id])
+  @@map("dog_daycare_checkins")
+}
+
+model CustomerFeedback {
+  id          String   @id @default(cuid())
+  customer_id String
+  service_id  String
+  booking_id  String?
+  rating      Int      // 1 to 5
+  comments    String?
+  created_at  DateTime @default(now())
+
+  customer Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  service  Service  @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@index([customer_id])
+  @@index([service_id])
+  @@index([rating])
+  @@map("customer_feedbacks")
+}
+
+// =========================================================================
+// SERVICE MODULE #2 — CAR WASH & AUTO DETAILING
+// =========================================================================
+
+model Vehicle {
+  id            String   @id @default(cuid())
+  customer_id   String
+  make          String   // e.g. "Hyundai", "Tata", "Toyota", "BMW"
+  model         String   // e.g. "Creta", "Nexon", "Innova", "Fortuner"
+  vehicle_type  String   @default("SEDAN") // HATCHBACK, SEDAN, SUV, LUXURY
+  license_plate String   @unique // e.g. "KA01AB1234"
+  color         String?
+  notes         String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  customer Customer         @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  bookings CarWashBooking[]
+
+  @@index([customer_id])
+  @@index([license_plate])
+  @@map("vehicles")
+}
+
+model CarWashPackage {
+  id               String   @id @default(cuid())
+  code             String   @unique // e.g. "QUICK_FOAM", "INTERIOR_DEEP", "CERAMIC_SPA"
+  name             String
+  description      String?
+  price_hatchback  Float
+  price_sedan      Float
+  price_suv        Float
+  price_luxury     Float    @default(0)
+  duration_minutes Int      @default(45)
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  bookings CarWashBooking[]
+
+  @@index([code])
+  @@index([is_active])
+  @@map("car_wash_packages")
+}
+
+model CarWashBooking {
+  id                   String   @id @default(cuid())
+  booking_number       String   @unique // e.g. "ND-CW-202609-1024"
+  customer_id          String
+  vehicle_id           String
+  package_id           String?
+  booking_date         DateTime // Date of wash
+  time_slot            String   @default("10:00 AM - 11:00 AM")
+  bay_number           Int      @default(1) // Bay 1, Bay 2, Bay 3
+  amount               Float
+  discount             Float    @default(0)
+  total_amount         Float
+  booking_status       String   @default("CONFIRMED")
+  // CONFIRMED, IN_QUEUE, WASHING, DETAILING, READY_FOR_PICKUP, COMPLETED, CANCELLED
+  payment_status       String   @default("PENDING") // PENDING, PAID, OFFLINE_COLLECTED, REFUNDED
+  payment_id           String?
+  cancellation_reason  String?
+  refund_amount        Float    @default(0)
+  special_instructions String?
+  source               String   @default("WHATSAPP") // WHATSAPP, DASHBOARD_MANUAL, PHONE_IN
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  customer Customer        @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  vehicle  Vehicle         @relation(fields: [vehicle_id], references: [id], onDelete: Cascade)
+  package  CarWashPackage? @relation(fields: [package_id], references: [id])
+  payment  Payment?        @relation(fields: [payment_id], references: [id])
+
+  @@index([customer_id])
+  @@index([vehicle_id])
+  @@index([booking_date])
+  @@index([booking_status])
+  @@map("car_wash_bookings")
+}
+
+model CarWashBayAvailability {
+  id          String   @id @default(cuid())
+  date        DateTime // Date of slot
+  time_slot   String   // e.g. "10:00 AM - 11:00 AM"
+  total_bays  Int      @default(3)
+  booked_bays Int      @default(0)
+  is_blocked  Boolean  @default(false)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([date, time_slot])
+  @@index([date])
+  @@map("car_wash_bay_availability")
+}
+
