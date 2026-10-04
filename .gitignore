@@ -11,6 +11,9 @@
 /.next/
 /out/
 
+# OpenNext Cloudflare build output
+/.open-next/
+
 # Database files
 *.db
 *.db-journal
